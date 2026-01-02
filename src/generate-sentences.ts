@@ -1,9 +1,12 @@
 import { db } from './db'; 
 import { openai } from '@ai-sdk/openai';
-import { generateText, Output } from 'ai'; // 1. Import generateText and Output
+import { generateText, Output } from 'ai'; 
 import { z } from 'zod';
 import { sentences, words } from './schema';
 import { asc } from 'drizzle-orm';
+
+// Configuration Constant
+const TARGET_SENTENCE_COUNT = 5;
 
 // Define the structure we want the AI to return
 const ResponseSchema = z.object({
@@ -25,25 +28,25 @@ async function main() {
     limit: 1000
   });
 
-  const incompleteWords = allWords.filter(w => w.sentences.length < 3);
+  // Refactored: Use the constant to filter
+  const incompleteWords = allWords.filter(w => w.sentences.length < TARGET_SENTENCE_COUNT);
 
   if (incompleteWords.length === 0) {
-    console.log("✅ All words have enough sentences!");
+    console.log(`✅ All words have at least ${TARGET_SENTENCE_COUNT} sentences!`);
     return;
   }
 
   console.log(`Processing ${incompleteWords.length} words...`);
 
   for (const word of incompleteWords) {
-    const needed = 3 - word.sentences.length;
+    // Refactored: Use the constant to calculate needed amount
+    const needed = TARGET_SENTENCE_COUNT - word.sentences.length;
     process.stdout.write(`Generating ${needed} contexts for "${word.english}"... `);
 
     try {
-      // 2. Updated Vercel AI SDK Call
       const { output } = await generateText({
-        model: openai('gpt-4.1-mini'),
+        model: openai('gpt-4o-mini'), // Note: Adjusted to valid model name if 'gpt-4.1-mini' isn't available yet
         
-        // New Syntax: Use Output.object with your Zod schema
         output: Output.object({
             schema: ResponseSchema,
         }),
@@ -59,7 +62,6 @@ async function main() {
         `,
       });
 
-      // 3. Save to Database (Note: result is now in 'output', not 'object')
       if (output.examples.length > 0) {
         const newSentences = output.examples.map(ex => ({
           wordId: word.id,
