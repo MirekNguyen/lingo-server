@@ -3,7 +3,7 @@ import { openai } from '@ai-sdk/openai';
 import { generateText, Output } from 'ai'; // 1. Import generateText and Output
 import { z } from 'zod';
 import { sentences, words } from './schema';
-import { desc } from 'drizzle-orm';
+import { asc } from 'drizzle-orm';
 
 // Define the structure we want the AI to return
 const ResponseSchema = z.object({
@@ -20,7 +20,7 @@ async function main() {
   console.log("🤖 AI Sentence Generator (Vercel SDK 6) Initialized...");
 
   const allWords = await db.query.words.findMany({
-    orderBy: [desc(words.frequencyRank)],
+    orderBy: [asc(words.frequencyRank)],
     with: { sentences: true },
     limit: 1000
   });
