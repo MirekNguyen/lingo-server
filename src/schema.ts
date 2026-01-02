@@ -11,7 +11,7 @@ export const words = pgTable('words', {
   // SRS State remains attached to the WORD, not the sentence
   isNew: boolean('is_new').default(true).notNull(),
   repetition: integer('repetition').default(0).notNull(),
-  interval: integer('interval').default(0).notNull(),
+  interval: real('interval').default(0).notNull(),
   easeFactor: real('ease_factor').default(2.5).notNull(),
   dueDate: timestamp('due_date').defaultNow().notNull(),
 });
