@@ -1,0 +1,1 @@
+ALTER TABLE "words" ALTER COLUMN "interval" SET DATA TYPE real;
