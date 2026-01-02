@@ -8,7 +8,9 @@ export const normalizeText = (text: string): string => {
   return text
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\u0300-\u036f]/g, "") // Removes standard tone marks
+    .replace(/đ/g, "d")              // <--- MANUALLY FIX 'đ'
+    .replace(/Đ/g, "D")              // <--- MANUALLY FIX 'Đ'
     .trim();
 };
 
