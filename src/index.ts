@@ -1,7 +1,7 @@
 // index.ts
 import { Elysia, t } from 'elysia';
 import { db } from './db';
-import { eq, and, lte, asc } from 'drizzle-orm';
+import { eq, and, lte, asc, count } from 'drizzle-orm';
 import { normalizeText, calculateReview } from './logic';
 import { words } from './schema';
 import cors from '@elysiajs/cors';
@@ -70,43 +70,73 @@ const app = new Elysia()
 
 // ... imports
 
+const LEARNING_QUEUE_LIMIT = 5; // Max "floating" words allowed
 app.get('/learn', async () => {
-    // 1. Get the Word (Same priority logic as before)
-    // We use Drizzle's "with" to fetch connected sentences
-    const nextCard = await db.query.words.findFirst({
-        where: eq(words.isNew, true), // Simplified for brevity
-        orderBy: [asc(words.frequencyRank)],
-        with: {
-            sentences: true // <--- FETCH RELATIONS
-        }
+    const now = new Date();
+
+    // ---------------------------------------------------------
+    // PRIORITY 1: Overdue Reviews (Strict SRS)
+    // ---------------------------------------------------------
+    // Words explicitly due in the past
+    const overdue = await db.query.words.findFirst({
+      where: and(
+        eq(words.isNew, false),
+        lte(words.dueDate, now)
+      ),
+      orderBy: [asc(words.dueDate)],
+      with: { sentences: true } // Don't forget to include sentences!
     });
 
-    if (!nextCard) return { message: "Done" };
+    if (overdue) return { type: 'review', card: overdue };
 
-    // 2. Pick a Random Sentence
-    // If no sentences exist, we send null (Frontend handles fallback)
-    let selectedContext = null;
+    // ---------------------------------------------------------
+    // PRIORITY 2: The "Overwhelm Protection" (NEW LOGIC)
+    // ---------------------------------------------------------
+    // Count how many words are currently in the "Learning Phase" (Interval 0)
+    // but are technically waiting for their 10-minute timer.
+    const learningStats = await db
+      .select({ count: count() })
+      .from(words)
+      .where(and(
+        eq(words.isNew, false),
+        eq(words.interval, 0)  // Interval 0 means "Learning Phase"
+      ));
     
-    if (nextCard.sentences.length > 0) {
-        const randomIndex = Math.floor(Math.random() * nextCard.sentences.length);
-        const s = nextCard.sentences[randomIndex];
-        selectedContext = {
-            vietnamese: s.vietnamese,
-            english: s.english
+    const activeLearningCount = learningStats[0].count;
+
+    // IF we have too many active words (e.g. > 5), force a review NOW.
+    // We pick the one with the closest due date.
+    if (activeLearningCount >= LEARNING_QUEUE_LIMIT) {
+      const earlyReview = await db.query.words.findFirst({
+        where: and(
+          eq(words.isNew, false),
+          eq(words.interval, 0)
+        ),
+        orderBy: [asc(words.dueDate)], // Pick the one closest to being ready
+        with: { sentences: true }
+      });
+
+      if (earlyReview) {
+        return { 
+          type: 'review', 
+          card: earlyReview, 
+          message: "Let's solidify these before learning more." // Optional UI hint
         };
+      }
     }
 
-    // 3. Return Clean Payload
-    return {
-        type: 'new',
-        card: {
-            id: nextCard.id,
-            english: nextCard.english,
-            vietnamese: nextCard.vietnamese,
-            // We only send ONE sentence to the user
-            context: selectedContext 
-        }
-    };
-});
+    // ---------------------------------------------------------
+    // PRIORITY 3: New Words (Only if Queue is safe)
+    // ---------------------------------------------------------
+    const newWord = await db.query.words.findFirst({
+      where: eq(words.isNew, true),
+      orderBy: [asc(words.frequencyRank)],
+      with: { sentences: true }
+    });
+
+    if (newWord) return { type: 'new', card: newWord };
+
+    return { message: "All caught up! Come back later." };
+  })
 
 console.log(`🦊 Lingvist API is running at ${app.server?.hostname}:${app.server?.port}`);
