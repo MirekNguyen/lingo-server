@@ -1,0 +1,17 @@
+volumes:
+  lingo-data:
+    name: lingo-data
+
+services:
+  lingo-db:
+    image: postgres:17-alpine
+    container_name: lingo-db
+    environment:
+      - POSTGRES_USER=${DB_USER:-lingo}
+      - POSTGRES_DB=${DB_NAME:-lingo}
+      - POSTGRES_PASSWORD=${DB_PASS:-lingo}
+    ports:
+      - ${DB_PORT:-45432}:5432
+    volumes:
+      - lingo-data:/var/lib/postgresql/data
+    restart: unless-stopped

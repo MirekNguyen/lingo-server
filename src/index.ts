@@ -1,120 +1,112 @@
 // index.ts
-import { select, input } from '@inquirer/prompts';
-import chalk from 'chalk';
-import fs from 'node:fs/promises';
-import { calculateNextReview, normalizeText, ReviewGrade, type Flashcard } from './algo';
+import { Elysia, t } from 'elysia';
+import { db } from './db';
+import { eq, and, lte, asc } from 'drizzle-orm';
+import { normalizeText, calculateReview } from './logic';
+import { words } from './schema';
+import cors from '@elysiajs/cors';
 
-const DB_FILE = 'progress.json';
+const app = new Elysia()
+  .use(cors())
+  
+  // --- ENDPOINT 2: Submit Answer ---
+  // --- POST /review (UPDATED) ---
+  .post('/review', async ({ body }) => {
+    // 1. Destructure the new 'revealed' flag
+    const { cardId, userAnswer, revealed } = body; 
 
-// 1. Initial Data (If no save file exists)
-const SEED_DATA = [
-  { id: '1', english: "Hello", vietnamese: "Xin chào", frequencyRank: 1 },
-  { id: '2', english: "Thank you", vietnamese: "Cảm ơn", frequencyRank: 2 },
-  { id: '3', english: "Water", vietnamese: "Nước", frequencyRank: 50 },
-  { id: '4', english: "Coffee", vietnamese: "Cà phê", frequencyRank: 60 },
-  { id: '5', english: "Difficult", vietnamese: "Khó", frequencyRank: 500 },
-];
-
-// 2. Load Database
-async function loadDb(): Promise<Flashcard[]> {
-  try {
-    const data = await fs.readFile(DB_FILE, 'utf-8');
-    const json = JSON.parse(data);
-    // Revive date strings back to Date objects
-    return json.map((c: any) => ({ ...c, dueDate: new Date(c.dueDate) }));
-  } catch {
-    // Initialize fresh DB
-    return SEED_DATA.map(w => ({
-      ...w,
-      repetition: 0,
-      interval: 0,
-      easeFactor: 2.5,
-      dueDate: new Date(),
-      isNew: true
-    }));
-  }
-}
-
-// 3. Save Database
-async function saveDb(db: Flashcard[]) {
-  await fs.writeFile(DB_FILE, JSON.stringify(db, null, 2));
-}
-
-// 4. The Main Loop
-async function startSession() {
-  const db = await loadDb();
-  console.clear();
-  console.log(chalk.bold.green("🌱 Lingvist CLI (Bun Edition)"));
-  console.log(chalk.gray("Type answers without accents (e.g., 'xin chao' for 'Xin chào')\n"));
-
-  while (true) {
-    const now = new Date();
-
-    // Strategy: Get Overdue Reviews OR High Priority New Words
-    // We treat anything with dueDate <= now as "Ready to study"
-    const candidates = db.filter(c => c.dueDate <= now);
-
-    if (candidates.length === 0) {
-      console.log(chalk.yellow("\n🎉 All caught up! Come back later."));
-      break;
-    }
-
-    // Sort: Reviews first, then New words by frequency
-    candidates.sort((a, b) => {
-        if (!a.isNew && b.isNew) return -1; // Review before New
-        if (a.isNew && !b.isNew) return 1;
-        if (a.isNew && b.isNew) return a.frequencyRank - b.frequencyRank; // Freq sort
-        return a.dueDate.getTime() - b.dueDate.getTime();
+    const card = await db.query.words.findFirst({
+      where: eq(words.id, cardId)
     });
 
-    const card = candidates[0];
-    const isReview = !card.isNew;
+    if (!card) throw new Error("Card not found");
 
-    // --- DISPLAY CARD ---
-    console.log(chalk.dim("------------------------------------------------"));
-    console.log(`${chalk.blue.bold(card.english)}`);
-    if (isReview) console.log(chalk.dim(`(Reviewing item)`));
-    
-    // --- GET INPUT ---
-    const answer = await input({ message: 'Vietnamese:' });
+    // 2. Check Answer
+    const normalizedInput = normalizeText(userAnswer);
+    const normalizedTarget = normalizeText(card.vietnamese);
+    const isCorrect = normalizedInput === normalizedTarget;
 
-    // --- CHECK ANSWER (Normalized) ---
-    const cleanInput = normalizeText(answer);
-    const cleanTarget = normalizeText(card.vietnamese);
-    
-    const isCorrect = cleanInput === cleanTarget;
+    // 3. Calculate SRS Updates (Pass the 'revealed' flag)
+    // Note: We pass the whole 'card' object now to keep arguments clean
+    const updates = calculateReview(
+      card, 
+      isCorrect, 
+      revealed // <--- NEW ARGUMENT
+    );
 
-    // --- FEEDBACK & UPDATE ---
-    if (isCorrect) {
-      console.log(chalk.green(`✅ Correct! (${card.vietnamese})`));
-      
-      const updates = calculateNextReview(card, ReviewGrade.PASS);
-      Object.assign(card, updates, { isNew: false });
-      
-      console.log(chalk.gray(`   Next review in ${updates.interval} days.`));
-    } else {
-      console.log(chalk.red(`❌ Incorrect.`));
-      console.log(`   Correct answer: ${chalk.bold(card.vietnamese)}`);
-      console.log(`   You typed: ${answer} (normalized: ${cleanInput})`);
-      
-      const updates = calculateNextReview(card, ReviewGrade.FAIL);
-      Object.assign(card, updates, { isNew: false });
-    }
+    await db.update(words)
+      .set(updates)
+      .where(eq(words.id, cardId));
 
-    // Save state after every card
-    await saveDb(db);
+    return {
+      correct: isCorrect,
+      correctAnswer: card.vietnamese,
+      nextReviewDays: updates.interval,
+      // Logic: If they revealed it, they "failed" the test even if they typed it right
+      message: (isCorrect && !revealed) ? "Great job!" : `Review this again soon.`
+    };
+  }, {
+    // 4. Update Validation Schema
+    body: t.Object({
+      cardId: t.String(),
+      userAnswer: t.String(),
+      revealed: t.Boolean() // <--- NEW VALIDATION
+    })
+  })
 
-    // Ask to continue
-    const shouldContinue = await select({
-        message: 'Continue?',
-        choices: [
-            { name: 'Next Card', value: true },
-            { name: 'Quit', value: false },
-        ]
+  // --- ENDPOINT 3: Add Content (Seeding) ---
+  .post('/words', async ({ body }) => {
+    await db.insert(words).values(body);
+    return { success: true };
+  }, {
+    body: t.Object({
+      english: t.String(),
+      vietnamese: t.String(),
+      frequencyRank: t.Numeric()
+    })
+  })
+
+  .listen(3000);
+
+// ... imports
+
+app.get('/learn', async () => {
+    // 1. Get the Word (Same priority logic as before)
+    // We use Drizzle's "with" to fetch connected sentences
+    const nextCard = await db.query.words.findFirst({
+        where: eq(words.isNew, true), // Simplified for brevity
+        orderBy: [asc(words.frequencyRank)],
+        with: {
+            sentences: true // <--- FETCH RELATIONS
+        }
     });
 
-    if (!shouldContinue) break;
-  }
-}
+    if (!nextCard) return { message: "Done" };
 
-startSession();
+    // 2. Pick a Random Sentence
+    // If no sentences exist, we send null (Frontend handles fallback)
+    let selectedContext = null;
+    
+    if (nextCard.sentences.length > 0) {
+        const randomIndex = Math.floor(Math.random() * nextCard.sentences.length);
+        const s = nextCard.sentences[randomIndex];
+        selectedContext = {
+            vietnamese: s.vietnamese,
+            english: s.english
+        };
+    }
+
+    // 3. Return Clean Payload
+    return {
+        type: 'new',
+        card: {
+            id: nextCard.id,
+            english: nextCard.english,
+            vietnamese: nextCard.vietnamese,
+            // We only send ONE sentence to the user
+            context: selectedContext 
+        }
+    };
+});
+
+console.log(`🦊 Lingvist API is running at ${app.server?.hostname}:${app.server?.port}`);
